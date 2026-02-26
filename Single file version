@@ -1,0 +1,176 @@
+import java.time.LocalDateTime;
+import java.util.*;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicReference;
+
+/* =======================
+   ENUM: Transaction Status
+   ======================= */
+enum TransactionStatus {
+    PENDING,
+    SUCCESS,
+    FAILED
+}
+
+/* =======================
+   MODEL: Transaction
+   ======================= */
+class Transaction {
+    private final String transactionId;
+    private final String fromUser;
+    private final String toUser;
+    private final double amount;
+    private TransactionStatus status;
+    private final LocalDateTime timestamp;
+
+    public Transaction(String transactionId, String fromUser, String toUser, double amount) {
+        this.transactionId = transactionId;
+        this.fromUser = fromUser;
+        this.toUser = toUser;
+        this.amount = amount;
+        this.status = TransactionStatus.PENDING;
+        this.timestamp = LocalDateTime.now();
+    }
+
+    public void markSuccess() { this.status = TransactionStatus.SUCCESS; }
+    public void markFailed() { this.status = TransactionStatus.FAILED; }
+
+    public String getTransactionId() { return transactionId; }
+    public TransactionStatus getStatus() { return status; }
+
+    @Override
+    public String toString() {
+        return "TxnID=" + transactionId +
+                ", From=" + fromUser +
+                ", To=" + toUser +
+                ", Amount=" + amount +
+                ", Status=" + status +
+                ", Time=" + timestamp;
+    }
+}
+
+/* =======================
+   MODEL: Wallet
+   ======================= */
+class Wallet {
+    private final String userId;
+    private final AtomicReference<Double> balance;
+
+    public Wallet(String userId) {
+        this.userId = userId;
+        this.balance = new AtomicReference<>(0.0);
+    }
+
+    public String getUserId() { return userId; }
+
+    public double getBalance() { return balance.get(); }
+
+    public boolean debit(double amount) {
+        while (true) {
+            double current = balance.get();
+            if (current < amount) return false;
+            if (balance.compareAndSet(current, current - amount)) return true;
+        }
+    }
+
+    public void credit(double amount) {
+        balance.updateAndGet(b -> b + amount);
+    }
+}
+
+/* =======================
+   SERVICE: Payment System
+   ======================= */
+class PaymentService {
+
+    private final Map<String, Wallet> walletStore = new ConcurrentHashMap<>();
+    private final Map<String, Transaction> transactionStore = new ConcurrentHashMap<>();
+    private final Set<String> processedIdempotencyKeys = ConcurrentHashMap.newKeySet();
+
+    public void createWallet(String userId) {
+        walletStore.putIfAbsent(userId, new Wallet(userId));
+    }
+
+    public void addMoney(String userId, double amount) {
+        walletStore.get(userId).credit(amount);
+    }
+
+    public Transaction transfer(String idempotencyKey,
+                                String fromUser,
+                                String toUser,
+                                double amount) {
+
+        // Prevent duplicate payment
+        if (!processedIdempotencyKeys.add(idempotencyKey)) {
+            System.out.println("Duplicate payment prevented for key: " + idempotencyKey);
+            return transactionStore.get(idempotencyKey);
+        }
+
+        Transaction txn = new Transaction(idempotencyKey, fromUser, toUser, amount);
+        transactionStore.put(idempotencyKey, txn);
+
+        Wallet fromWallet = walletStore.get(fromUser);
+        Wallet toWallet = walletStore.get(toUser);
+
+        // Deadlock prevention by consistent locking order
+        Object lock1 = fromUser.compareTo(toUser) < 0 ? fromWallet : toWallet;
+        Object lock2 = fromUser.compareTo(toUser) < 0 ? toWallet : fromWallet;
+
+        synchronized (lock1) {
+            synchronized (lock2) {
+                boolean debited = fromWallet.debit(amount);
+                if (!debited) {
+                    txn.markFailed();
+                    return txn;
+                }
+                toWallet.credit(amount);
+                txn.markSuccess();
+                return txn;
+            }
+        }
+    }
+
+    public void printBalances() {
+        walletStore.values().forEach(w ->
+                System.out.println("User: " + w.getUserId() + " | Balance: " + w.getBalance())
+        );
+    }
+}
+
+/* =======================
+   MAIN: Load Simulation
+   ======================= */
+public class Main {
+
+    public static void main(String[] args) throws InterruptedException {
+
+        PaymentService service = new PaymentService();
+
+        service.createWallet("Alice");
+        service.createWallet("Bob");
+
+        service.addMoney("Alice", 1000);
+
+        ExecutorService executor = Executors.newFixedThreadPool(5);
+
+        for (int i = 0; i < 5; i++) {
+            final int index = i;
+            executor.submit(() -> {
+                String idempotencyKey = "TXN-" + index;
+                Transaction txn = service.transfer(
+                        idempotencyKey,
+                        "Alice",
+                        "Bob",
+                        100
+                );
+                System.out.println(txn);
+            });
+        }
+
+        executor.shutdown();
+        executor.awaitTermination(5, TimeUnit.SECONDS);
+
+        System.out.println("\nFinal Balances:");
+        service.printBalances();
+    }
+}
