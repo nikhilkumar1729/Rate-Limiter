@@ -1,0 +1,21 @@
+public boolean transfer(String fromUser, String toUser, double amount) {
+    Wallet fromWallet = walletStore.get(fromUser);
+    Wallet toWallet = walletStore.get(toUser);
+
+    Object lock1 = fromUser.compareTo(toUser) < 0 ? fromWallet : toWallet;
+    Object lock2 = fromUser.compareTo(toUser) < 0 ? toWallet : fromWallet;
+
+    synchronized (lock1) {
+        synchronized (lock2) {
+
+            if (fromWallet.getBalance() < amount) {
+                return false;
+            }
+
+            fromWallet.debit(amount);
+            toWallet.credit(amount);
+
+            return true;
+        }
+    }
+}
