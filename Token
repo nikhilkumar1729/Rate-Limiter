@@ -1,0 +1,48 @@
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
+
+class TokenBucket {
+    private final long capacity;
+    private final long refillRate;
+    private AtomicLong tokens;
+    private long lastRefillTime;
+
+    public TokenBucket(long capacity, long refillRate) {
+        this.capacity = capacity;
+        this.refillRate = refillRate;
+        this.tokens = new AtomicLong(capacity);
+        this.lastRefillTime = System.nanoTime();
+    }
+
+    public synchronized boolean allowRequest() {
+        refill();
+
+        if (tokens.get() > 0) {
+            tokens.decrementAndGet();
+            return true;
+        }
+        return false;
+    }
+
+    private void refill() {
+        long now = System.nanoTime();
+        long elapsed = now - lastRefillTime;
+
+        long tokensToAdd = (elapsed / 1_000_000_000L) * refillRate;
+        if (tokensToAdd > 0) {
+            long newTokens = Math.min(capacity, tokens.get() + tokensToAdd);
+            tokens.set(newTokens);
+            lastRefillTime = now;
+        }
+    }
+}
+
+class TokenBucketRateLimiter {
+
+    private final ConcurrentHashMap<String, TokenBucket> userBuckets = new ConcurrentHashMap<>();
+
+    public boolean allowRequest(String userId) {
+        userBuckets.putIfAbsent(userId, new TokenBucket(10, 5));
+        return userBuckets.get(userId).allowRequest();
+    }
+}
