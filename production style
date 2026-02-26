@@ -1,0 +1,110 @@
+import java.time.Instant;
+import java.util.Map;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicLong;
+
+/**
+ * Interface for Rate Limiter
+ */
+interface RateLimiter {
+    boolean allowRequest(String userId);
+}
+
+/**
+ * Token Bucket Implementation
+ */
+class TokenBucket {
+    private final long capacity;
+    private final long refillTokensPerSecond;
+    private final AtomicLong tokens;
+    private volatile long lastRefillTimestamp;
+
+    public TokenBucket(long capacity, long refillTokensPerSecond) {
+        this.capacity = capacity;
+        this.refillTokensPerSecond = refillTokensPerSecond;
+        this.tokens = new AtomicLong(capacity);
+        this.lastRefillTimestamp = Instant.now().getEpochSecond();
+    }
+
+    public boolean tryConsume() {
+        refill();
+
+        while (true) {
+            long currentTokens = tokens.get();
+            if (currentTokens <= 0) {
+                return false;
+            }
+            if (tokens.compareAndSet(currentTokens, currentTokens - 1)) {
+                return true;
+            }
+        }
+    }
+
+    private void refill() {
+        long now = Instant.now().getEpochSecond();
+        long elapsed = now - lastRefillTimestamp;
+
+        if (elapsed > 0) {
+            long tokensToAdd = elapsed * refillTokensPerSecond;
+            long newTokenCount = Math.min(capacity, tokens.get() + tokensToAdd);
+            tokens.set(newTokenCount);
+            lastRefillTimestamp = now;
+        }
+    }
+}
+
+/**
+ * RateLimiter Manager
+ */
+class TokenBucketRateLimiter implements RateLimiter {
+
+    private final Map<String, TokenBucket> bucketStore;
+    private final long capacity;
+    private final long refillRate;
+
+    public TokenBucketRateLimiter(long capacity, long refillRate) {
+        this.bucketStore = new ConcurrentHashMap<>();
+        this.capacity = capacity;
+        this.refillRate = refillRate;
+    }
+
+    @Override
+    public boolean allowRequest(String userId) {
+        bucketStore.putIfAbsent(userId, new TokenBucket(capacity, refillRate));
+        return bucketStore.get(userId).tryConsume();
+    }
+}
+
+/**
+ * Load Simulation
+ */
+public class Main {
+
+    public static void main(String[] args) throws InterruptedException {
+
+        RateLimiter rateLimiter = new TokenBucketRateLimiter(5, 2);
+
+        ExecutorService executor = Executors.newFixedThreadPool(10);
+
+        for (int i = 0; i < 20; i++) {
+            final int requestNumber = i;
+
+            executor.submit(() -> {
+                String userId = "user1";
+
+                boolean allowed = rateLimiter.allowRequest(userId);
+
+                System.out.println(
+                        "Request " + requestNumber +
+                        " | Allowed: " + allowed +
+                        " | Thread: " + Thread.currentThread().getName()
+                );
+            });
+
+            Thread.sleep(200);
+        }
+
+        executor.shutdown();
+        executor.awaitTermination(5, TimeUnit.SECONDS);
+    }
+}
