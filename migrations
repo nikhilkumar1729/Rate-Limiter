@@ -1,0 +1,8 @@
+CREATE TABLE payments (
+    id VARCHAR(64) PRIMARY KEY,
+    user_id VARCHAR(64),
+    amount DECIMAL(10,2),
+    status VARCHAR(20),
+    retry_count INT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
